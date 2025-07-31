@@ -7,7 +7,7 @@
 
 import SwiftUI
 
-@main
+
 struct notes_dotesApp: App {
     var body: some Scene {
         WindowGroup {
