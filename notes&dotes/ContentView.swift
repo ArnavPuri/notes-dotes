@@ -3,9 +3,33 @@ import Foundation
 
 @main
 struct TaskNotesApp: App {
+    init() {
+        // Make the window title bar transparent
+        if let windowClass = NSClassFromString("NSWindow") as? NSWindow.Type {
+            DispatchQueue.main.async {
+                for window in NSApplication.shared.windows {
+                    window.titlebarAppearsTransparent = true
+                    window.titleVisibility = .hidden
+                    window.styleMask.insert(.fullSizeContentView)
+                }
+            }
+        }
+    }
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .onAppear {
+                    // Apply window styling when view appears
+                    DispatchQueue.main.async {
+                        if let window = NSApplication.shared.windows.first {
+                            window.titlebarAppearsTransparent = true
+                            window.titleVisibility = .hidden
+                            window.styleMask.insert(.fullSizeContentView)
+                            window.isMovableByWindowBackground = true
+                        }
+                    }
+                }
         }
         .windowStyle(DefaultWindowStyle())
         .commands {
@@ -120,6 +144,7 @@ struct ContentView: View {
             .background(Color(NSColor.windowBackgroundColor))
         }
         .frame(minWidth: 800, minHeight: 600)
+        .background(Color.clear)
         .onAppear {
             loadNotes()
         }
