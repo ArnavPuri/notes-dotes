@@ -9,14 +9,14 @@ struct TaskNotesApp: App {
             DispatchQueue.main.async {
                 for window in NSApplication.shared.windows {
                     window.titlebarAppearsTransparent = true
-                    window.titleVisibility = .hidden
+                    window.titleVisibility = .visible
                     window.styleMask.insert(.fullSizeContentView)
                 }
             }
         }
     }
     
-    var body: some Scene {  
+    var body: some Scene {
         WindowGroup {
             ContentView()
                 .onAppear {
@@ -24,9 +24,10 @@ struct TaskNotesApp: App {
                     DispatchQueue.main.async {
                         if let window = NSApplication.shared.windows.first {
                             window.titlebarAppearsTransparent = true
-                            window.titleVisibility = .hidden
+                            window.titleVisibility = .visible
                             window.styleMask.insert(.fullSizeContentView)
                             window.isMovableByWindowBackground = true
+                            window.title = "Untitled"
                         }
                     }
                 }
@@ -35,7 +36,8 @@ struct TaskNotesApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New") {
-                    // Create new file functionality if needed
+                    // Create new file functionality
+                    NotificationCenter.default.post(name: .newFile, object: nil)
                 }
                 .keyboardShortcut("n")
             }
@@ -47,6 +49,18 @@ struct TaskNotesApp: App {
                 .keyboardShortcut("o")
                 
                 Divider()
+            }
+            
+            CommandGroup(replacing: .saveItem) {
+                Button("Save") {
+                    NotificationCenter.default.post(name: .saveFile, object: nil)
+                }
+                .keyboardShortcut("s")
+                
+                Button("Save As...") {
+                    saveAsFile()
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
             }
         }
     }
@@ -62,8 +76,37 @@ struct TaskNotesApp: App {
             guard let url = panel.url else { return }
             DataManager.shared.loadFromFile(url: url)
             
+            // Update window title
+            DispatchQueue.main.async {
+                if let window = NSApplication.shared.windows.first {
+                    window.title = url.lastPathComponent
+                    window.representedURL = url
+                }
+            }
+            
             // Post notification to refresh the UI
             NotificationCenter.default.post(name: .fileOpened, object: nil)
+        }
+    }
+    
+    private func saveAsFile() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "TaskNotes.txt"
+        panel.canCreateDirectories = true
+        
+        if panel.runModal() == .OK {
+            guard let url = panel.url else { return }
+            DataManager.shared.saveCurrentDataTo(url: url)
+            
+            // Update window title
+            DispatchQueue.main.async {
+                if let window = NSApplication.shared.windows.first {
+                    window.title = url.lastPathComponent
+                    window.representedURL = url
+                    window.isDocumentEdited = false
+                }
+            }
         }
     }
 }
@@ -72,6 +115,7 @@ struct ContentView: View {
     @StateObject private var taskStore = TaskStore()
     @State private var notes = ""
     @State private var newTaskText = ""
+    @State private var hasUnsavedChanges = false
     private let dataManager = DataManager.shared
     
     var body: some View {
@@ -105,8 +149,10 @@ struct ContentView: View {
                         ForEach(taskStore.tasks) { task in
                             TaskRow(task: task, onToggle: {
                                 taskStore.toggleTask(task)
+                                markAsEdited()
                             }, onDelete: {
                                 taskStore.deleteTask(task)
+                                markAsEdited()
                             })
                         }
                         
@@ -147,12 +193,20 @@ struct ContentView: View {
         .background(Color.clear)
         .onAppear {
             loadNotes()
+            setupWindowCloseHandler()
         }
         .onChange(of: notes) { _ in
+            markAsEdited()
             saveNotes()
         }
         .onReceive(NotificationCenter.default.publisher(for: .fileOpened)) { _ in
             refreshFromFile()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .newFile)) { _ in
+            createNewFile()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .saveFile)) { _ in
+            saveCurrentFile()
         }
     }
     
@@ -160,6 +214,7 @@ struct ContentView: View {
         guard !newTaskText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         taskStore.addTask(title: newTaskText)
         newTaskText = ""
+        markAsEdited()
     }
     
     private func saveNotes() {
@@ -168,11 +223,100 @@ struct ContentView: View {
     
     private func loadNotes() {
         notes = dataManager.loadNotes()
+        hasUnsavedChanges = false
+        updateWindowEditedState()
     }
     
     private func refreshFromFile() {
         taskStore.refreshTasks()
         notes = dataManager.loadNotes()
+        hasUnsavedChanges = false
+        updateWindowEditedState()
+    }
+    
+    private func createNewFile() {
+        // Show save dialog if there are unsaved changes
+        if hasUnsavedChanges {
+            showUnsavedChangesDialog {
+                // Clear data for new file
+                taskStore.clearTasks()
+                notes = ""
+                hasUnsavedChanges = false
+                updateWindowTitle("Untitled")
+                updateWindowEditedState()
+            }
+        } else {
+            // Clear data for new file
+            taskStore.clearTasks()
+            notes = ""
+            hasUnsavedChanges = false
+            updateWindowTitle("Untitled")
+            updateWindowEditedState()
+        }
+    }
+    
+    private func saveCurrentFile() {
+        // If no current file, show Save As dialog
+        if let window = NSApplication.shared.windows.first,
+           let url = window.representedURL {
+            dataManager.saveCurrentDataTo(url: url)
+            hasUnsavedChanges = false
+            updateWindowEditedState()
+        } else {
+            // No file associated, trigger Save As
+            NotificationCenter.default.post(name: .saveAsFile, object: nil)
+        }
+    }
+    
+    private func markAsEdited() {
+        hasUnsavedChanges = true
+        updateWindowEditedState()
+    }
+    
+    private func updateWindowEditedState() {
+        DispatchQueue.main.async {
+            if let window = NSApplication.shared.windows.first {
+                window.isDocumentEdited = hasUnsavedChanges
+            }
+        }
+    }
+    
+    private func updateWindowTitle(_ title: String) {
+        DispatchQueue.main.async {
+            if let window = NSApplication.shared.windows.first {
+                window.title = title
+                window.representedURL = nil
+            }
+        }
+    }
+    
+    private func setupWindowCloseHandler() {
+        DispatchQueue.main.async {
+            if let window = NSApplication.shared.windows.first {
+                window.delegate = WindowDelegate()
+            }
+        }
+    }
+    
+    private func showUnsavedChangesDialog(onSave: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Do you want to save the changes?"
+        alert.informativeText = "Your changes will be lost if you don't save them."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don't Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn: // Save
+            saveCurrentFile()
+            onSave()
+        case .alertSecondButtonReturn: // Don't Save
+            onSave()
+        default: // Cancel
+            break
+        }
     }
 }
 
@@ -209,10 +353,41 @@ struct TaskRow: View {
     }
 }
 
+// MARK: - Window Delegate
+
+class WindowDelegate: NSObject, NSWindowDelegate {
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender.isDocumentEdited {
+            let alert = NSAlert()
+            alert.messageText = "Do you want to save the changes?"
+            alert.informativeText = "Your changes will be lost if you don't save them."
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+            
+            let response = alert.runModal()
+            switch response {
+            case .alertFirstButtonReturn: // Save
+                NotificationCenter.default.post(name: .saveFile, object: nil)
+                return true
+            case .alertSecondButtonReturn: // Don't Save
+                return true
+            default: // Cancel
+                return false
+            }
+        }
+        return true
+    }
+}
+
 // MARK: - Notification Extension
 
 extension Notification.Name {
     static let fileOpened = Notification.Name("fileOpened")
+    static let newFile = Notification.Name("newFile")
+    static let saveFile = Notification.Name("saveFile")
+    static let saveAsFile = Notification.Name("saveAsFile")
 }
 
 // MARK: - Data Manager
@@ -266,13 +441,15 @@ class DataManager {
     
     // MARK: - Tasks Management
     
-    func saveTasks(_ tasks: [Task]) {
+    func saveTasks(_ tasks: [Task], to url: URL? = nil) {
         let notes = loadNotes()
         let tasksJSON = encodeTasksToJSON(tasks)
         let content = "\(tasksJSON)\n\(separator)\n\(notes)"
         
+        let targetURL = url ?? fileURL
+        
         do {
-            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            try content.write(to: targetURL, atomically: true, encoding: .utf8)
         } catch {
             print("Failed to save tasks: \(error)")
         }
@@ -289,15 +466,37 @@ class DataManager {
     
     // MARK: - Notes Management
     
-    func saveNotes(_ notes: String) {
+    func saveNotes(_ notes: String, to url: URL? = nil) {
         let tasks = loadTasks()
         let tasksJSON = encodeTasksToJSON(tasks)
         let content = "\(tasksJSON)\n\(separator)\n\(notes)"
         
+        let targetURL = url ?? fileURL
+        
         do {
-            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            try content.write(to: targetURL, atomically: true, encoding: .utf8)
         } catch {
             print("Failed to save notes: \(error)")
+        }
+    }
+    
+    func saveCurrentDataTo(url: URL) {
+        let tasks = loadTasks()
+        let notes = loadNotes()
+        let tasksJSON = encodeTasksToJSON(tasks)
+        let content = "\(tasksJSON)\n\(separator)\n\(notes)"
+        
+        do {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "Error Saving File"
+                alert.informativeText = "Could not save the file: \(error.localizedDescription)"
+                alert.alertStyle = .critical
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
         }
     }
     
@@ -386,6 +585,11 @@ class TaskStore: ObservableObject {
     
     func refreshTasks() {
         tasks = dataManager.loadTasks()
+    }
+    
+    func clearTasks() {
+        tasks = []
+        saveTasks()
     }
     
     private func saveTasks() {
